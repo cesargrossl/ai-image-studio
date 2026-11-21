@@ -1,0 +1,25 @@
+services:
+  app:
+    build: ./backend
+    ports:
+      - "${APP_PORT:-8501}:8501"
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      APP_PASSWORD: ${APP_PASSWORD:-troque-esta-senha}
+    volumes:
+      - ./data:/app/data
+      - rembg_models:/root/.u2net
+    depends_on:
+      - ollama
+    restart: unless-stopped
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_models:/root/.ollama
+    restart: unless-stopped
+    # Para GPU NVIDIA, descomente após instalar NVIDIA Container Toolkit:
+    # gpus: all
+volumes:
+  ollama_models:
+  rembg_models:
