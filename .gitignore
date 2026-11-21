@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+storage/originals/*
+storage/edited/*
+storage/masks/*
+!storage/originals/.gitkeep
+!storage/edited/.gitkeep
+!storage/masks/.gitkeep

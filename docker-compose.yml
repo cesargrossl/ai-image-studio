@@ -1,25 +1,43 @@
+name: ai-image-studio
 services:
   app:
-    build: ./backend
+    build: ./app
+    restart: unless-stopped
     ports:
       - "${APP_PORT:-8501}:8501"
     environment:
+      APP_PASSWORD: ${APP_PASSWORD:?Defina APP_PASSWORD no arquivo .env}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
-      APP_PASSWORD: ${APP_PASSWORD:-troque-esta-senha}
+      COMFYUI_URL: http://comfyui:8188
+      DATA_DIR: /data
+      REMBG_MODEL: ${REMBG_MODEL:-u2net}
     volumes:
-      - ./data:/app/data
+      - ./storage:/data
       - rembg_models:/root/.u2net
     depends_on:
       - ollama
-    restart: unless-stopped
   ollama:
     image: ollama/ollama:latest
+    restart: unless-stopped
     volumes:
       - ollama_models:/root/.ollama
-    restart: unless-stopped
-    # Para GPU NVIDIA, descomente após instalar NVIDIA Container Toolkit:
+    # For NVIDIA GPU: uncomment the following block after installing NVIDIA Container Toolkit.
     # gpus: all
+    # CPU operation is supported, but slower.
+  comfyui:
+    profiles: ["generative"]
+    build: ./comfyui
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${COMFYUI_PORT:-8188}:8188"
+    volumes:
+      - comfyui_models:/opt/ComfyUI/models
+      - comfyui_output:/opt/ComfyUI/output
+      - ./comfyui/workflows:/workflows:ro
+    gpus: all
 volumes:
   ollama_models:
   rembg_models:
+  comfyui_models:
+  comfyui_output:
