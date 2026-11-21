@@ -1,198 +1,251 @@
+"""AI Image Studio — tudo começa no chat, inclusive o envio de fotos."""
+import io
 import os
-import hmac
-import json
 from pathlib import Path
-from datetime import datetime, timezone
-from io import BytesIO
+
+import requests
 import streamlit as st
-from PIL import Image, ImageDraw
-from processing import read_image, remove_background, apply_background, adjust, shadow, add_text, inpaint_mask, upscale, as_png
+from PIL import Image
 
-st.set_page_config(page_title="AI Image Studio", page_icon="🖼️", layout="wide")
-DATA = Path(os.getenv("DATA_DIR", "/data"))
-for folder in ("originals", "edited", "masks"):
-    (DATA / folder).mkdir(parents=True, exist_ok=True)
+import db
+from planner import build_plan
+from processor import EditError, apply_plan, open_uploaded
+
+st.set_page_config(page_title="AI Image Studio • Chat", page_icon="🖼️", layout="wide")
+st.markdown("""<style>
+.block-container{padding-top:1.6rem;max-width:1250px}
+[data-testid="stChatMessage"]{border-radius:12px}
+small{color:#778}
+</style>""", unsafe_allow_html=True)
 
 
-def authenticated():
-    expected = os.getenv("APP_PASSWORD", "")
-    if not expected or expected == "troque-esta-senha-forte":
-        st.error("Configure uma senha forte em APP_PASSWORD no .env e recrie o contêiner.")
-        st.stop()
-    if st.session_state.get("logged_in"):
-        return True
-    st.title("🔒 AI Image Studio")
-    pwd = st.text_input("Senha de acesso", type="password")
-    if st.button("Entrar", type="primary"):
-        if hmac.compare_digest(pwd, expected):
-            st.session_state.logged_in = True
-            st.rerun()
-        else:
-            st.error("Senha incorreta")
+@st.cache_resource
+def initialize():
+    db.init_db()
+    return True
+
+
+try:
+    initialize()
+except Exception as exc:
+    st.error(f"Configuração inicial inválida: {exc}")
+    st.info("Edite o arquivo .env com APP_PASSWORD e recrie o contêiner: docker compose up -d --force-recreate")
     st.stop()
 
 
-authenticated()
-st.title("🖼️ AI Image Studio")
-st.caption("Edição local de imagens · ferramentas tradicionais e segmentação por IA · Ollama opcional")
+def service_status(url: str):
+    try:
+        result = requests.get(url + "/health", timeout=2)
+        if result.ok:
+            info = result.json()
+            if "cuda" in info and not info["cuda"]:
+                return "🟠 Serviço online, mas sem GPU CUDA"
+            return "🟢 Online"
+        return "🔴 Indisponível"
+    except requests.RequestException:
+        return "⚪ Não iniciado"
+
+
+def login():
+    st.title("🖼️ AI Image Studio")
+    st.caption("Editor de imagens por conversação • Docker local")
+    with st.form("login"):
+        username = st.text_input("Usuário", value=os.getenv("APP_ADMIN_USER", "admin"))
+        password = st.text_input("Senha", type="password")
+        submit = st.form_submit_button("Entrar", type="primary")
+        if submit:
+            if db.authenticate(username.strip(), password):
+                st.session_state["username"] = username.strip()
+                st.rerun()
+            else:
+                st.error("Usuário ou senha incorretos. Confira APP_ADMIN_USER/APP_PASSWORD no .env e recrie o contêiner.")
+    st.caption("O administrador é configurado no .env. Senhas dos demais usuários são criadas pelo administrador.")
+    st.stop()
+
+
+if "username" not in st.session_state:
+    login()
+
+username = st.session_state["username"]
+if not db.list_projects(username) and "active_project" not in st.session_state:
+    st.session_state.active_project = None
 
 with st.sidebar:
-    st.header("Projeto")
-    st.write("Ajustes, fundo, sombra, texto, remoção com máscara e histórico.")
-    if st.button("Sair"):
-        st.session_state.logged_in = False
+    st.header("🖼️ AI Image Studio")
+    st.caption(f"Conectado: **{username}**")
+    if st.button("Sair", use_container_width=True):
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
         st.rerun()
-    st.warning("A remoção de objetos por máscara usa OpenCV e funciona melhor em áreas pequenas. Cenários gerados por IA requerem workflow/modelo adicional.")
 
-upload = st.file_uploader("Envie sua imagem", type=["png", "jpg", "jpeg", "webp"])
-if upload is not None:
-    file_bytes = upload.getvalue()
-    import hashlib
-    signature = hashlib.sha256(file_bytes).hexdigest()
-    if st.session_state.get("signature") != signature:
-        try:
-            image = read_image(file_bytes)
-        except Exception as exc:
-            st.error(f"Arquivo inválido: {exc}")
-            st.stop()
-        st.session_state.signature = signature
-        st.session_state.original = image
-        st.session_state.image = image.copy()
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        st.session_state.session_file = f"{stamp}_{signature[:10]}"
-        (DATA / "originals" / f"{st.session_state.session_file}.png").write_bytes(as_png(image))
-
-if "image" not in st.session_state:
-    st.info("Selecione uma imagem para começar. Depois use as abas para editar.")
-    st.stop()
-
-image = st.session_state.image
-original = st.session_state.original
-left, right = st.columns(2)
-with left:
-    st.subheader("Original")
-    st.image(original, use_container_width=True)
-with right:
-    st.subheader("Resultado")
-    st.image(image, use_container_width=True)
-
-if st.button("↩️ Restaurar original"):
-    st.session_state.image = original.copy()
-    st.rerun()
-
-tabs = st.tabs(["🎨 Ajustes", "🧼 Fundo", "✂️ Remover objeto", "📝 Texto", "🔎 Ampliar", "💬 Comandos", "📁 Histórico"])
-with tabs[0]:
-    brightness = st.slider("Brilho", 0.2, 3.0, 1.0, 0.05)
-    contrast = st.slider("Contraste", 0.2, 3.0, 1.0, 0.05)
-    saturation = st.slider("Saturação", 0.0, 3.0, 1.0, 0.05)
-    sharpness = st.slider("Nitidez", 0.0, 3.0, 1.0, 0.05)
-    if st.button("Aplicar ajustes"):
-        st.session_state.image = adjust(image, brightness, contrast, saturation, sharpness)
+    st.divider()
+    st.subheader("Projetos")
+    projects = db.list_projects(username)
+    selected_project = st.session_state.get("active_project")
+    if selected_project and selected_project not in {p["id"] for p in projects}:
+        selected_project = None
+    if st.button("＋ Novo projeto", use_container_width=True):
+        st.session_state.active_project = None
         st.rerun()
-with tabs[1]:
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Remover fundo com IA"):
-            with st.spinner("Processando (primeira execução pode baixar o modelo)..."):
-                try:
-                    st.session_state.image = remove_background(image)
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Falha na remoção do fundo: {exc}")
-    with col2:
-        bg_color = st.color_picker("Cor do novo fundo", "#FFFFFF")
-        if st.button("Aplicar cor de fundo"):
-            st.session_state.image = apply_background(image, bg_color)
+    if projects:
+        options = [p["id"] for p in projects]
+        if selected_project is None and not st.session_state.get("new_project_open"):
+            # Em modo novo, o usuário ainda pode enviar um novo arquivo via chat.
+            pass
+        selected = st.selectbox("Abrir projeto existente", options=[""] + options,
+                                format_func=lambda i: "Selecione..." if i == "" else next(p["name"] for p in projects if p["id"] == i),
+                                index=(options.index(selected_project) + 1) if selected_project in options else 0,
+                                key=f"choose_project_{selected_project or 'new'}")
+        if selected and selected != selected_project:
+            st.session_state.active_project = selected
             st.rerun()
-    if st.button("Adicionar sombra"):
-        st.session_state.image = shadow(image)
-        st.rerun()
-with tabs[2]:
-    st.write("Desenhe sobre o objeto que deseja remover. Para áreas grandes ou fundos complexos, o resultado pode ser limitado.")
-    try:
-        from streamlit_drawable_canvas import st_canvas
-        preview = image.convert("RGB")
-        w, h = preview.size
-        scale = min(1.0, 700 / max(w, 1))
-        sw, sh = max(1, int(w * scale)), max(1, int(h * scale))
-        resized = preview.resize((sw, sh))
-        brush = st.slider("Espessura do pincel", 5, 90, 25)
-        canvas = st_canvas(fill_color="rgba(255,0,0,0.35)", stroke_width=brush,
-                           stroke_color="#FF0000", background_image=resized,
-                           update_streamlit=True, height=sh, width=sw, drawing_mode="freedraw", key=f"mask_{st.session_state.signature}")
-        if st.button("Remover área marcada"):
-            if canvas.image_data is None:
-                st.warning("Desenhe primeiro sobre o objeto.")
+
+    st.divider()
+    st.subheader("Edição avançada (opcional)")
+    uploaded_mask = st.file_uploader("Máscara PNG (branco = editar, preto = manter)", type=["png"], key="mask")
+    uploaded_bg = st.file_uploader("Foto de fundo para substituir cenário", type=["png", "jpg", "jpeg", "webp"], key="bg")
+    manual_mask = None
+    bg_image = None
+    if uploaded_mask:
+        try:
+            manual_mask = Image.open(io.BytesIO(uploaded_mask.getvalue())).convert("L")
+            st.caption("Máscara carregada: será usada nos comandos de remover/trocar objetos.")
+        except Exception:
+            st.error("Máscara PNG inválida")
+    if uploaded_bg:
+        try:
+            bg_image = open_uploaded(uploaded_bg.getvalue())
+            st.caption("Fundo enviado: peça 'troque pelo fundo que enviei'.")
+        except Exception:
+            st.error("Imagem de fundo inválida")
+    st.divider()
+    with st.expander("Serviços de IA"):
+        st.caption("Os serviços opcionais são carregados somente quando usados.")
+        st.write("Geração:", service_status(os.getenv("GENERATOR_URL", "http://generator:8001")))
+        st.write("Seleção de objetos:", service_status(os.getenv("SEGMENTER_URL", "http://segmenter:8002")))
+        st.caption("Ollama: use `docker compose exec ollama ollama list` para confirmar os modelos baixados.")
+    if db.is_admin(username):
+        with st.expander("Administrar usuários"):
+            with st.form("new_user", clear_on_submit=True):
+                new_user = st.text_input("Novo nome de usuário")
+                new_pass = st.text_input("Senha inicial (mín. 10 caracteres)", type="password")
+                if st.form_submit_button("Criar usuário"):
+                    try:
+                        db.create_user(new_user, new_pass)
+                        st.success(f"Usuário {new_user} criado")
+                    except Exception as exc:
+                        st.error(f"Não foi possível criar: {exc}")
+            st.caption("Usuários: " + ", ".join(db.list_users()))
+
+st.title("💬 AI Image Studio")
+st.caption("Anexe uma foto ao chat e peça qualquer alteração. Cada nova imagem abre um projeto com histórico próprio.")
+
+with st.expander("Exemplos de comandos que você pode pedir", expanded=False):
+    st.markdown("""- Remova o fundo e coloque um fundo branco.
+- Aumente o brilho 20%, o contraste 10% e melhore a nitidez.
+- Remova a toalha azul e reconstrua o fundo.
+- Troque a toalha azul por uma toalha branca.
+- Coloque o produto em um quarto de hotel moderno com iluminação natural.
+- Coloque o fundo enviado e adicione uma sombra suave.
+- Desfoque o fundo e insira o texto \"Linha Premium\".
+- Melhore a fotografia e corrija o balanço de branco.
+- Amplie a resolução duas vezes.
+- Expanda as bordas da foto para caber em formato horizontal.""")
+
+project_id = st.session_state.get("active_project")
+if project_id:
+    versions = db.versions(project_id, username)
+    if versions:
+        left, right = st.columns(2)
+        original = Image.open(versions[0]["file_path"])
+        latest = Image.open(versions[-1]["file_path"])
+        with left:
+            st.subheader("Original")
+            st.image(original, use_container_width=True)
+        with right:
+            st.subheader(f"Resultado • versão {versions[-1]['version_num']}")
+            st.image(latest, use_container_width=True)
+            buf = io.BytesIO()
+            latest.save(buf, "PNG")
+            st.download_button("⬇️ Baixar imagem PNG", buf.getvalue(),
+                               file_name=f"imagem_editada_v{versions[-1]['version_num']}.png", mime="image/png")
+        with st.expander("Histórico de versões / restaurar"):
+            if len(versions) > 1:
+                numbers = [v["version_num"] for v in versions]
+                choice = st.select_slider("Ver versão", options=numbers, value=numbers[-1])
+                item = next(v for v in versions if v["version_num"] == choice)
+                st.image(item["file_path"], width=350)
+                st.caption(item["instruction"])
+                if st.button("Restaurar esta versão como nova edição"):
+                    restore = Image.open(item["file_path"]).copy()
+                    db.write_version(project_id, username, restore, f"Restauração da versão {choice}")
+                    st.rerun()
             else:
-                import numpy as np
-                # Canvas alpha can contain background; use red-dominant pixels as mask.
-                arr = canvas.image_data.astype("int16")
-                selected = ((arr[:, :, 0] > arr[:, :, 1] + 70) & (arr[:, :, 0] > arr[:, :, 2] + 70)).astype("uint8") * 255
-                if selected.max() == 0:
-                    st.warning("Nenhuma marcação vermelha encontrada.")
-                else:
-                    mask = Image.fromarray(selected, mode="L").resize(image.size, Image.Resampling.NEAREST)
-                    (DATA / "masks" / f"{st.session_state.session_file}.png").write_bytes(as_png(mask.convert("RGBA")))
-                    st.session_state.image = inpaint_mask(image, mask)
-                    st.rerun()
-    except Exception as exc:
-        st.error(f"Editor de máscara indisponível: {exc}")
-with tabs[3]:
-    text = st.text_input("Texto a inserir", "")
-    size = st.slider("Tamanho da fonte", 12, 150, 32)
-    color = st.color_picker("Cor do texto", "#000000")
-    x = st.number_input("Posição X", 0, image.width, 20)
-    y = st.number_input("Posição Y", 0, image.height, 20)
-    if st.button("Inserir texto") and text:
-        st.session_state.image = add_text(image, text, x, y, size, color)
-        st.rerun()
-with tabs[4]:
-    st.caption("Ampliação Lanczos (não é super-resolução generativa).")
-    if st.button("Ampliar 2×"):
-        if image.width * image.height * 4 > 24_000_000:
-            st.error("Ampliação excederia 24 megapixels.")
-        else:
-            st.session_state.image = upscale(image)
-            st.rerun()
-with tabs[5]:
-    st.write("O Ollama pode interpretar o pedido e sugerir uma operação. Confirme antes de aplicar.")
-    command = st.text_area("Seu pedido", placeholder="Ex.: aumente o brilho em 20%")
-    if st.button("Interpretar com Ollama") and command:
-        try:
-            from ai import parse_instruction
-            with st.spinner("Consultando Ollama..."):
-                st.session_state.proposal = parse_instruction(command)
-        except Exception as exc:
-            st.error(f"Ollama indisponível ou modelo não baixado: {exc}")
-    proposal = st.session_state.get("proposal")
-    if proposal:
-        st.json(proposal)
-        action = proposal.get("action")
-        if action in {"remove_object", "generative"}:
-            st.info("Para remoção de objetos, use a aba de máscara. Para cenas generativas, configure um workflow no ComfyUI.")
-        elif action in {"remove_background", "background_white", "background_beige", "brightness", "contrast"}:
-            if st.button("Confirmar e aplicar comando"):
-                try:
-                    amount = min(100, max(0, float(proposal.get("amount") or 20)))
-                    if action == "remove_background": result = remove_background(image)
-                    elif action == "background_white": result = apply_background(image, "white")
-                    elif action == "background_beige": result = apply_background(image, "#E8DCC8")
-                    elif action == "brightness": result = adjust(image, 1 + amount/100, 1, 1, 1)
-                    else: result = adjust(image, 1, 1 + amount/100, 1, 1)
-                    st.session_state.image = result
-                    st.session_state.proposal = None
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Falha na operação: {exc}")
-with tabs[6]:
-    files = sorted((DATA / "edited").glob("*.png"), reverse=True)[:30]
-    st.write(f"Últimas {len(files)} edições salvas")
-    for f in files:
-        st.text(f.name)
+                st.caption("O projeto ainda contém somente a foto original.")
+        st.divider()
+        for m in db.chat_history(project_id, username):
+            with st.chat_message(m["role"]):
+                st.markdown(m["content"])
+else:
+    st.info("📎 Para começar, clique no ícone de anexo do campo de chat, escolha sua foto e escreva uma instrução. Também pode anexar só a foto.")
 
-st.divider()
-if st.button("💾 Salvar edição no histórico"):
-    name = f"{st.session_state.session_file}_{datetime.now(timezone.utc).strftime('%H%M%S%f')}.png"
-    (DATA / "edited" / name).write_bytes(as_png(st.session_state.image))
-    st.success(f"Salvo: {name}")
-st.download_button("⬇️ Baixar imagem PNG", data=as_png(st.session_state.image), file_name="imagem_editada.png", mime="image/png", type="primary")
+input_value = st.chat_input("Ex.: remova a toalha azul e coloque outra branca...", accept_file=True,
+                            file_type=["jpg", "jpeg", "png", "webp"], key="main_chat")
+
+if input_value:
+    prompt = (input_value.text or "").strip()
+    images = list(input_value.files or [])
+    if images:
+        selected_img = images[0]
+        max_mb = int(os.getenv("MAX_IMAGE_MB", "20"))
+        if len(selected_img.getvalue()) > max_mb * 1024 * 1024:
+            st.error(f"Imagem excede o limite de {max_mb} MB")
+            st.stop()
+        try:
+            photo = open_uploaded(selected_img.getvalue())
+            name = Path(selected_img.name).stem[:80] or "Nova fotografia"
+            project_id = db.create_project(username, name)
+            db.write_version(project_id, username, photo, "Imagem original enviada pelo chat")
+            st.session_state.active_project = project_id
+            st.success(f"Foto '{selected_img.name}' recebida. Novo projeto criado.")
+        except Exception as exc:
+            st.error(f"Não foi possível receber a foto: {exc}")
+            st.stop()
+    if not project_id:
+        st.warning("Primeiro anexe a imagem na conversa usando o ícone de anexo do chat.")
+        st.stop()
+    if not prompt:
+        db.add_message(project_id, username, "assistant", "Imagem recebida. Qual alteração você deseja fazer?")
+        st.rerun()
+    db.add_message(project_id, username, "user", prompt)
+    current_version = db.versions(project_id, username)[-1]
+    current = Image.open(current_version["file_path"]).copy()
+    with st.chat_message("assistant"):
+        with st.spinner("Interpretando o comando e processando a imagem..."):
+            prior = db.chat_history(project_id, username)
+            plan = build_plan(prompt, prior[:-1])
+            if not plan.steps:
+                reply = plan.question or "Não consegui montar um plano de edição para esse pedido."
+                st.info(reply)
+                db.add_message(project_id, username, "assistant", reply)
+            else:
+                st.caption("Plano: " + " → ".join(s["action"] for s in plan.steps))
+                try:
+                    processed, notes = apply_plan(current, plan.steps,
+                                                  manual_mask=manual_mask, background_image=bg_image)
+                    db.write_version(project_id, username, processed, prompt)
+                    answer = "✅ **Edição aplicada**\n\n" + "\n\n".join(notes)
+                    if plan.source == "regras locais":
+                        answer += "\n\n*O modelo Ollama não respondeu; usei o interpretador local limitado.*"
+                    db.add_message(project_id, username, "assistant", answer)
+                    st.success("Imagem editada. Veja a comparação e baixe o PNG acima.")
+                except EditError as exc:
+                    answer = f"❌ **Edição não concluída:** {exc}\n\nA imagem anterior foi preservada."
+                    db.add_message(project_id, username, "assistant", answer)
+                    st.error(answer)
+                except Exception as exc:
+                    # Nunca dizer que a operação ocorreu se falhou.
+                    answer = f"❌ **Erro inesperado:** {type(exc).__name__}: {exc}. A imagem anterior foi preservada."
+                    db.add_message(project_id, username, "assistant", answer)
+                    st.error(answer)
+    st.rerun()

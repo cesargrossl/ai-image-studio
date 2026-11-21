@@ -1,0 +1,4 @@
+# OPCIONAL: usa a GPU também no Ollama. Reserve VRAM para os outros serviços.
+services:
+  ollama:
+    gpus: all

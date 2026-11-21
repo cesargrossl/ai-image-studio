@@ -1,43 +1,78 @@
-name: ai-image-studio
+name: ai-image-studio-chat
+
 services:
   app:
-    build: ./app
+    build:
+      context: ./app
     restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      OLLAMA_URL: http://ollama:11434
+      GENERATOR_URL: http://generator:8001
+      SEGMENTER_URL: http://segmenter:8002
+      DATA_DIR: /data
     ports:
       - "${APP_PORT:-8501}:8501"
-    environment:
-      APP_PASSWORD: ${APP_PASSWORD:?Defina APP_PASSWORD no arquivo .env}
-      OLLAMA_URL: http://ollama:11434
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
-      COMFYUI_URL: http://comfyui:8188
-      DATA_DIR: /data
-      REMBG_MODEL: ${REMBG_MODEL:-u2net}
     volumes:
-      - ./storage:/data
-      - rembg_models:/root/.u2net
+      - ./data:/data
+      - rembg_models:/home/app/.u2net
     depends_on:
       - ollama
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 4
+      start_period: 45s
+
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
     volumes:
       - ollama_models:/root/.ollama
-    # For NVIDIA GPU: uncomment the following block after installing NVIDIA Container Toolkit.
-    # gpus: all
-    # CPU operation is supported, but slower.
-  comfyui:
-    profiles: ["generative"]
-    build: ./comfyui
+    expose:
+      - "11434"
+
+  # Opcional: só inicia com --profile gpu; exige GPU NVIDIA visível ao Docker.
+  generator:
+    profiles: ["gpu"]
+    build:
+      context: ./services/generator
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:${COMFYUI_PORT:-8188}:8188"
+    environment:
+      HF_HOME: /models/huggingface
+      SDXL_BASE_MODEL: ${SDXL_BASE_MODEL:-stabilityai/stable-diffusion-xl-base-1.0}
+      SDXL_INPAINT_MODEL: ${SDXL_INPAINT_MODEL:-diffusers/stable-diffusion-xl-1.0-inpainting-0.1}
+      GEN_LOW_VRAM: ${GEN_LOW_VRAM:-0}
+      GEN_MAX_SIDE: ${GEN_MAX_SIDE:-1024}
+      HF_TOKEN: ${HF_TOKEN:-}
     volumes:
-      - comfyui_models:/opt/ComfyUI/models
-      - comfyui_output:/opt/ComfyUI/output
-      - ./comfyui/workflows:/workflows:ro
+      - huggingface_models:/models/huggingface
+    expose:
+      - "8001"
     gpus: all
+    shm_size: "2gb"
+
+  # Opcional: máscaras automáticas por texto (Grounding DINO + SAM).
+  segmenter:
+    profiles: ["objects"]
+    build:
+      context: ./services/segmenter
+    restart: unless-stopped
+    environment:
+      HF_HOME: /models/huggingface
+      DINO_MODEL: ${DINO_MODEL:-IDEA-Research/grounding-dino-tiny}
+      SAM_MODEL: ${SAM_MODEL:-facebook/sam-vit-base}
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - huggingface_models:/models/huggingface
+    expose:
+      - "8002"
+    gpus: all
+    shm_size: "2gb"
+
 volumes:
   ollama_models:
   rembg_models:
-  comfyui_models:
-  comfyui_output:
+  huggingface_models:

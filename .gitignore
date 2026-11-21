@@ -1,9 +1,7 @@
 .env
 __pycache__/
+.pytest_cache/
 *.pyc
-storage/originals/*
-storage/edited/*
-storage/masks/*
-!storage/originals/.gitkeep
-!storage/edited/.gitkeep
-!storage/masks/.gitkeep
+/data/*
+!/data/.gitkeep
+.DS_Store

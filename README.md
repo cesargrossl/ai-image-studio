@@ -1,19 +1,74 @@
-# AI Image Studio — Docker
+# AI Image Studio Chat — Docker
 
-Plataforma local de edição de imagens: Streamlit, Python/Pillow/OpenCV, rembg U²-Net, Ollama opcional para interpretação de comandos, ComfyUI opcional para workflows generativos (NVIDIA).
+Plataforma local de edição de imagens **com comandos pelo chat**. Anexe uma imagem diretamente à conversa, peça alterações em português e baixe o PNG. Histórico por usuário, login e edição em múltiplas etapas.
 
-**Estado real das funções:** brilho, contraste, saturação, nitidez, fundo sólido, remoção automática de fundo, sombra, texto, ampliação Lanczos, máscara manual com inpainting clássico, histórico e download são implementados. O ComfyUI é um serviço opcional independente: para remover objetos grandes ou gerar cenários com IA é necessário instalar modelos e configurar workflows no ComfyUI; **a interface principal não executa esses workflows automaticamente**. SAM 2, LaMa e Real-ESRGAN **não estão incluídos** nesta versão. Não confunda interpolação Lanczos com super-resolução por IA.
+## Começar agora
 
-## Início rápido (Windows / VS Code / Docker Desktop)
+No PowerShell do VS Code, na pasta do projeto:
 
-1. Extraia o ZIP, abra a pasta no VS Code e abra **Terminal > Novo Terminal**.
-2. No PowerShell, dentro da pasta do `docker-compose.yml`, rode `Copy-Item .env.example .env`.
-3. Edite `.env` e defina uma senha forte em `APP_PASSWORD`.
-4. Rode `docker compose up -d --build`.
-5. Acesse http://localhost:8501 e digite a senha.
-6. Para usar comandos por Ollama: `docker compose exec ollama ollama pull qwen2.5:3b`.
-7. Para logs: `docker compose logs -f app`.
+```powershell
+Copy-Item .env.example .env
+```
 
-Para iniciar o ComfyUI **opcional** em GPU NVIDIA com NVIDIA Container Toolkit: `docker compose --profile generative up -d --build`. Acesse http://localhost:8188 na máquina hospedeira. Instale checkpoints e workflows adequados na interface do ComfyUI; o Dockerfile instala apenas o motor, **não** modelos generativos. O ComfyUI está vinculado a 127.0.0.1 por segurança.
+Abra `.env` e **substitua obrigatoriamente `APP_PASSWORD=troque-esta-senha`** por uma senha forte. Em seguida:
 
-Leia `docs/COMO_SUBIR.md` para instruções detalhadas.
+```powershell
+docker compose up -d --build
+docker compose exec ollama ollama pull qwen2.5:3b
+```
+
+Acesse **http://localhost:8501** com usuário `admin` e a senha do `.env`.
+
+Os recursos simples funcionam com o Compose padrão. Para **remoção/substituição automática de objetos e cenários generativos** com GPU NVIDIA:
+
+```powershell
+docker compose --profile gpu --profile objects up -d --build
+```
+
+Veja [docs/COMO_SUBIR.md](docs/COMO_SUBIR.md) para configuração NVIDIA, exemplos, solução de problemas e troca de senha.
+
+## O que funciona em cada modo
+
+| Recurso | Docker básico | Com perfis GPU + objects |
+| --- | --- | --- |
+| Chat com imagem anexada e histórico | Sim | Sim |
+| Brilho/contraste/cor/nitidez/textos | Sim | Sim |
+| Remoção de fundo e fundo de cor | Sim | Sim |
+| Redimensionar, girar, cortar, sombra, desfoque | Sim | Sim |
+| Interpretação detalhada por Ollama | Sim (modelo após pull) | Sim |
+| Fundo gerado por IA | Não | Sim |
+| Remover/trocar objetos descritos por texto | Não | Sim |
+| Remoção com máscara manual + inpainting | Não | Sim |
+| Img2img / melhoria generativa e outpainting | Não | Sim |
+
+**Tecnologia de geração:** SDXL via Diffusers integrado diretamente ao chat (não depende de abrir o ComfyUI). **Modelos não acompanham o ZIP** e são baixados na primeira utilização. Modelos podem exigir aceitação de licença/token. Edits generativos não garantem fidelidade absoluta do produto.
+
+## Organização
+
+```text
+ai-image-studio-chat/
+├── .env.example
+├── docker-compose.yml
+├── docker-compose.nvidia.yml
+├── app/
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   ├── main.py
+│   ├── db.py
+│   ├── planner.py
+│   └── processor.py
+├── services/
+│   ├── generator/{Dockerfile,requirements.txt,server.py}
+│   └── segmenter/{Dockerfile,requirements.txt,server.py}
+├── docs/COMO_SUBIR.md
+├── data/
+└── tests/test_project.py
+```
+
+Para produção corporativa: precisa HTTPS, SSO/controle de acesso, limites de requisições e fila para GPU, backup e auditoria. Código entregue como base para evolução, sem garantia de compatibilidade de todas as GPUs/modelos.
+
+## Inicialização guiada
+
+Se preferir no Windows, execute `./INICIAR_WINDOWS.ps1` no terminal PowerShell.
+Na primeira chamada, o script cria `.env`; edite `APP_PASSWORD` e execute novamente.
+No Linux, use `./INICIAR_LINUX.sh`.

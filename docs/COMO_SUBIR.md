@@ -1,89 +1,180 @@
-# Manual de instalação — AI Image Studio
+# Manual completo — AI Image Studio Chat
 
-## Pré-requisitos
+## 1. O que é
 
-- Windows 10/11 com Docker Desktop + WSL2, ou Linux com Docker Engine e Docker Compose.
-- Recomenda-se 16 GB de RAM para funções básicas e 32–64 GB para uso mais intenso.
-- GPU NVIDIA e NVIDIA Container Toolkit são **opcionais** para a aplicação principal e necessários para o perfil `generative` definido neste projeto.
-- A primeira remoção de fundo baixa um modelo para o volume `rembg_models`, exigindo internet inicialmente.
+Sistema de edição de imagens local, com **interface única por chat**. O usuário anexa a imagem ao próprio campo de conversa e pede, em português, ajustes tradicionais ou edições generativas. O processamento tradicional funciona sem GPU dedicada; o generativo precisa de GPU NVIDIA e dos perfis opcionais do Docker Compose.
 
-## 1. Abrir projeto no VS Code
+## 2. Requisitos
 
-Extraia o ZIP. Abra a pasta `ai-image-studio-completo` no VS Code. Abra **Terminal > Novo Terminal** e confirme que `docker-compose.yml` aparece ao executar `dir`.
+- Docker Desktop com integração WSL2 no Windows **ou** Docker Engine + Compose no Ubuntu.
+- Para operação básica: CPU e 8 a 16 GB de RAM (remoção de fundo pode ser lenta).
+- Para perfis generativos `gpu` e `objects`: GPU NVIDIA CUDA compatível; recomendado 16–24 GB ou mais de VRAM, 64 GB de RAM, SSD NVMe com espaço para dezenas de GB de modelos.
+- Conexão à internet no primeiro download dos modelos (Ollama, rembg e Hugging Face).
+- **Não precisa instalar Python na máquina host.**
 
-## 2. Criar .env (PowerShell)
+A configuração GPU foi preparada para NVIDIA RTX 30/40 no ambiente CUDA 12.4. Para GPUs muito novas (ex.: algumas RTX 50) poderá ser necessário atualizar a imagem do PyTorch/CUDA; as versões dependem dos drivers e arquiteturas de GPU.
+
+## 3. Instalação rápida no Windows (VS Code + PowerShell)
+
+1. Extraia o ZIP.
+2. Abra no VS Code **a pasta que contém `docker-compose.yml`**.
+3. No menu **Terminal > Novo Terminal**, execute:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Abra `.env` e substitua `APP_PASSWORD=troque-esta-senha-forte` por uma senha longa e exclusiva, sem compartilhar esse arquivo. A senha é necessária para o aplicativo iniciar. No Linux, use `cp .env.example .env`.
+4. Abra `.env` no explorador do VS Code e troque `APP_PASSWORD=troque-esta-senha` por uma senha forte **sem espaços finais**. Exemplo (escolha sua própria senha):
 
-## 3. Subir serviços principais
+```env
+APP_ADMIN_USER=admin
+APP_PASSWORD=COLOQUE_UMA_SENHA_FORTE_AQUI
+APP_PORT=8501
+OLLAMA_MODEL=qwen2.5:3b
+```
+
+5. Salve com `Ctrl + S` e, no terminal, execute:
 
 ```powershell
 docker compose up -d --build
-docker compose ps
 ```
 
-Abra **http://localhost:8501** e faça login. O serviço `ollama` inicia, mas o modelo de linguagem ainda não é baixado.
-
-## 4. Baixar modelo para interpretar comandos (opcional)
+6. Baixe o modelo de interpretação dos comandos:
 
 ```powershell
 docker compose exec ollama ollama pull qwen2.5:3b
 ```
 
-Na aba **Comandos**, escreva uma instrução e clique em **Interpretar com Ollama**. A IA propõe uma operação; confirme antes de aplicar. Instruções complexas não são automaticamente executadas.
+7. Abra **http://localhost:8501**. Usuário inicial: `admin`. Senha: a definida no `.env`.
+8. No rodapé do chat, clique no **anexo de imagem**, escolha JPG/PNG/WEBP e escreva uma instrução. Também pode anexar primeiro e pedir alterações em mensagens seguintes.
 
-## 5. Editar imagens
+Se o Ollama ainda não estiver pronto, pedidos simples continuam funcionando por regras locais, mas instruções complexas podem solicitar esclarecimento.
 
-1. Envie JPG, PNG ou WEBP (até 30 MB e 24 megapixels).
-2. Use **Ajustes** para brilho, contraste, saturação e nitidez.
-3. Use **Fundo** para remover o fundo com U²-Net, aplicar uma cor ou sombra.
-4. Use **Remover objeto** para pintar a área e aplicar inpainting clássico. Para objetos grandes o resultado pode ficar ruim.
-5. Use **Texto** e **Ampliar** conforme necessário.
-6. Clique **Salvar edição no histórico** e **Baixar imagem PNG**.
+## 4. Ativar edição por IA generativa (GPU NVIDIA)
 
-## 6. ComfyUI opcional — edição generativa avançada
-
-Somente em computador com GPU NVIDIA e drivers compatíveis, configure o suporte a GPU do Docker (NVIDIA Container Toolkit no Linux; Docker Desktop com backend WSL2 e drivers NVIDIA no Windows).
+Para `background_scene`, `enhance_ai`, substituição de objetos e outpainting:
 
 ```powershell
-docker compose --profile generative up -d --build
+docker compose --profile gpu up -d --build
 ```
 
-Acesse **http://localhost:8188**. Instale manualmente checkpoints de modelos compatíveis com sua VRAM, configure workflows de inpainting/img2img e confira licenças de uso. **Esta versão não conecta automaticamente o chat Streamlit aos workflows do ComfyUI.** Modelos de alta qualidade podem exigir 16–24 GB de VRAM ou mais, dependendo do workflow.
+Para identificar automaticamente objetos descritos em texto (ex.: 'a toalha azul') e produzir máscaras de edição:
 
-O ComfyUI está exposto apenas em `127.0.0.1` no host. Não o exponha diretamente à internet.
+```powershell
+docker compose --profile gpu --profile objects up -d --build
+```
 
-## 7. Logs e manutenção
+O gerador usa **Stable Diffusion XL com Diffusers** diretamente pelo chat. O serviço de segmentação usa **Grounding DINO + SAM**. O primeiro comando desse tipo baixa modelos grandes da Hugging Face; os downloads ficam guardados em volume Docker. Serviços não expõem porta externa, somente a aplicação web é publicada.
+
+Para executar Ollama com GPU também (opcional; aumenta consumo de VRAM):
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.nvidia.yml --profile gpu --profile objects up -d --build
+```
+
+Verifique o driver com `nvidia-smi` no host. No Windows, deixe a integração WSL2 e o suporte a GPU do Docker funcionando. No Ubuntu, instale o **NVIDIA Container Toolkit** antes de subir perfis com GPU.
+
+## 5. Exemplos de comandos do chat
+
+| Pedido do usuário | Ferramenta |
+| --- | --- |
+| 'Remova o fundo' | rembg / U²-Net |
+| 'Deixe o fundo branco' | rembg + composição |
+| 'Troque o fundo por um quarto de hotel' | SDXL text-to-image + rembg |
+| 'Aumente o brilho 20% e contraste 10%' | Pillow |
+| 'Melhore a foto e corrija as cores' | Pillow + OpenCV |
+| 'Remova a toalha azul' | Grounding DINO + SAM + SDXL inpainting |
+| 'Troque a toalha azul por outra branca' | Grounding DINO + SAM + SDXL inpainting |
+| 'Remova o objeto selecionado rapidamente' | Máscara manual + OpenCV, se configurado fast_mode |
+| 'Desfoque o fundo' | rembg + Pillow |
+| 'Insira o texto "Linha Premium"' | Pillow |
+| 'Amplie duas vezes' | interpolação Lanczos, não IA neural |
+| 'Expanda as bordas em 20%' | SDXL inpainting |
+
+**Máscara manual (opcional):** na barra lateral, envie PNG com áreas **brancas** onde a IA pode modificar e **pretas** para preservar. Isso ajuda quando a detecção automática falhar. É um suporte adicional; a maioria dos pedidos pode começar diretamente pelo chat.
+
+**Limite do resultado:** um pedido com vários passos só gera nova versão se todas as etapas forem concluídas; em caso de erro, mantém a versão anterior. Histórico é salvo por usuário em SQLite e imagens em PNG.
+
+## 6. Trocar a senha que você esqueceu
+
+1. Abra o `.env` **na mesma pasta do Compose**. Edite `APP_PASSWORD`.
+2. Salve e execute:
+
+```powershell
+docker compose up -d --force-recreate app
+```
+
+3. Atualize `http://localhost:8501` e faça login com `APP_ADMIN_USER` e a nova senha. A senha do administrador é sincronizada com `.env` ao iniciar o aplicativo.
+4. Se ainda não funcionar, execute:
+
+```powershell
+docker compose exec app python -c "import os; print('usuário:', os.environ.get('APP_ADMIN_USER')); print('senha configurada:', bool(os.environ.get('APP_PASSWORD')))"
+docker compose logs --tail=100 app
+```
+
+Não envie sua senha real em prints. **Nunca use `docker compose down -v` se quiser conservar modelos e banco de dados.**
+
+## 7. Comandos de manutenção
 
 ```powershell
 docker compose ps
-docker compose logs --tail=100 app
-docker compose logs --tail=100 ollama
+docker compose logs --tail=80 app
+docker compose logs --tail=80 ollama
+docker compose --profile gpu logs --tail=80 generator
+docker compose --profile objects logs --tail=80 segmenter
 docker compose restart app
-docker compose down
+docker compose down                  # mantém volumes
 ```
 
-Para atualizar o código:
+### GPU sem memória
 
-```powershell
-docker compose up -d --build
+- Reduza `GEN_MAX_SIDE` para `768` no `.env`.
+- Ative `GEN_LOW_VRAM=1` (offload para RAM; mais lento).
+- Evite ativar GPU do Ollama durante uma geração grande.
+- Recrie: `docker compose --profile gpu --profile objects up -d --force-recreate`.
+
+### Falha no download de modelos
+
+Verifique acesso à Hugging Face, espaço livre, certificados, `HF_TOKEN` se o modelo exigir autorização e logs do serviço. O projeto não acompanha os pesos dos modelos; estes são baixados quando acionados.
+
+### Tela branca ou contêiner reiniciando
+
+Execute `docker compose logs --tail=100 app`. Verifique `.env`, espaço em disco e permissões de `./data`.
+
+### Linux: erro de permissão na pasta `data/`
+
+```bash
+mkdir -p data
+sudo chown -R 10001:10001 data
 ```
 
-**Não execute `docker compose down -v`**, pois isso apaga os volumes dos modelos. As imagens originais e editadas ficam em `storage/`.
+O contêiner principal roda como UID 10001; pastas de host sem permissão de escrita impedem SQLite e salvamento de PNG.
 
-## 8. Acesso em rede e segurança
+## 8. Arquivos e dados
 
-Para testes na rede local, acesse `http://IP_DO_SERVIDOR:8501` e libere apenas a porta 8501 no firewall para a sub-rede desejada. A senha é **compartilhada**, não existem contas individuais. Não exponha a aplicação diretamente à internet. Para produção, implemente HTTPS por proxy reverso, autenticação individual, controle de acesso, limites de uso, backups, atualização e varredura de uploads. Os arquivos de imagens são armazenados no host sem criptografia específica do aplicativo.
+- `app/main.py`: chat, anexos, autenticação, versões, download.
+- `app/planner.py`: Ollama (resposta estruturada JSON) e regras de contingência.
+- `app/processor.py`: todas as operações de edição.
+- `app/db.py`: autenticação PBKDF2 e banco SQLite.
+- `services/generator/server.py`: API privada de SDXL (texto, imagem, inpainting).
+- `services/segmenter/server.py`: API privada de máscaras de objetos por texto.
+- `data/studio.sqlite3`: contas, projetos, mensagens e versões.
+- `data/files/<uuid>/v0000.png`: imagens originais e versões.
 
-## 9. Solução de problemas
+## 9. Segurança e produção
 
-- **Página branca:** `docker compose logs --tail=100 app`; tente janela anônima.
-- **Não abre:** confira `docker compose ps`, porta 8501 e firewall.
-- **Senha não configurada:** verifique `.env` e rode `docker compose up -d --force-recreate`.
-- **Ollama falha:** baixe o modelo com `docker compose exec ollama ollama pull qwen2.5:3b`.
-- **Remoção de fundo lenta:** primeiro uso baixa o modelo; CPU pode ser lenta.
-- **GPU não detectada:** confirme drivers e NVIDIA Container Toolkit antes de iniciar o perfil generative.
+O projeto é uma base funcional e extensível, **não um produto auditado para produção**. Para cinco usuários corporativos, colocar a aplicação atrás de proxy reverso com HTTPS, SSO/identidade, backup, antivírus de uploads, quotas, controle de concorrência/fila de GPU, logs de auditoria e proteção de dados antes de disponibilizar fora da rede de testes. A tela web utiliza senha e contas locais, mas não substitui uma solução de segurança corporativa.
+
+Não expor serviços internos (`ollama`, `generator`, `segmenter`) na internet. Proteger o `.env` e fazer backup de `data/` e dos volumes de modelos se necessário.
+
+**Aviso de fidelidade:** a edição generativa pode inventar texturas, cores, logotipos e características do produto. Toda fotografia comercial deve ser revisada antes de publicar. A troca de cenário com recorte preserva melhor o produto original do que `enhance_ai`.
+
+## 10. Testes
+
+No host com Python e dependências de desenvolvimento instaladas, execute `python -m pytest -q tests`. No desenvolvimento, foram executadas verificações de sintaxe, testes de operações e estrutura do Compose; a execução completa dos modelos depende de Docker, GPU e download dos pesos.
+
+## 11. Inicializadores de conveniência
+
+No Windows (PowerShell, na pasta do projeto), execute `./INICIAR_WINDOWS.ps1`.
+No Linux (terminal, na pasta do projeto), execute `./INICIAR_LINUX.sh`.
+Se não houver `.env`, o script cria o arquivo a partir do exemplo e pede que você edite a senha antes de prosseguir. Isso **não** apaga o banco ou as imagens existentes.
