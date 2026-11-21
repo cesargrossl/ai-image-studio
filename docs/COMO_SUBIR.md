@@ -1,5 +1,5 @@
 # Como subir o AI Image Studio
-
+docker compose up -d --build
 ## Requisitos
 - Docker Engine com plugin Docker Compose (Linux) ou Docker Desktop (Windows).
 - Recomenda-se pelo menos 8 GB de RAM; CPU funciona, mas a remoção de fundo pode ser lenta.
